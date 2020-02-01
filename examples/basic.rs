@@ -1,5 +1,5 @@
 use picky;
 
 fn main() {
-    picky::run2().unwrap();
+    picky::run(&vec!["cats", "dogs", "bears"].to_vec(), 3).unwrap();
 }
