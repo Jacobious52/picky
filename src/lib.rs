@@ -1,6 +1,6 @@
 use std::{
-    collections::HashMap,
-    fmt::Display,
+    collections::BinaryHeap,
+    fmt::{Debug, Display},
     io::{stdout, Write},
     time::Duration,
 };
@@ -12,20 +12,15 @@ use std::cmp::Ordering;
 
 use rayon::prelude::*;
 
+pub trait Item: Display + Debug + Clone + Send + Sync + PartialEq {}
+impl<T: Display + Debug + Clone + Send + Sync + PartialEq> Item for T {}
+
 #[derive(Clone, Debug)]
 struct Prompt {
     prompt: String,
     text: String,
     height: u16,
     selection: usize,
-}
-
-#[derive(Clone, Debug)]
-struct List<T>
-where
-    T: Display + Clone + Send + Sync,
-{
-    items: Vec<T>,
 }
 
 impl Default for Prompt {
@@ -42,7 +37,7 @@ impl Default for Prompt {
 fn render<W, T>(prompt: &mut Prompt, write: &mut W, items: &[T]) -> Result<()>
 where
     W: Write,
-    T: Display + Clone + Send + Sync,
+    T: Item,
 {
     queue!(
         write,
@@ -75,35 +70,113 @@ where
     )
 }
 
-fn handle_events<W, T>(prompt: &mut Prompt, write: &mut W, list: &mut List<T>) -> Result<Option<T>>
+#[derive(Debug, Clone)]
+struct RankedItem<T>(T, i64)
+where
+    T: Item;
+
+impl<T> Ord for RankedItem<T>
+where
+    T: Item,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ord = self.1.cmp(&other.1);
+        if ord == Ordering::Equal {
+            return self
+                .0
+                .to_string()
+                .len()
+                .cmp(&other.0.to_string().len())
+                .reverse();
+        }
+        ord
+    }
+}
+
+impl<T> Eq for RankedItem<T> where T: Item {}
+
+impl<T> PartialOrd for RankedItem<T>
+where
+    T: Item,
+{
+    fn partial_cmp(&self, other: &RankedItem<T>) -> Option<Ordering> {
+        self.1.partial_cmp(&other.1)
+    }
+}
+
+impl<T> PartialEq for RankedItem<T>
+where
+    T: Item,
+{
+    fn eq(&self, other: &RankedItem<T>) -> bool {
+        self.1 == other.1
+    }
+}
+
+fn score_items<T>(matcher: &SkimMatcherV2, items: &[T], query: &str) -> Vec<RankedItem<T>>
+where
+    T: Item,
+{
+    items
+        .par_iter()
+        .filter_map(|i| {
+            let score = matcher.fuzzy_match(&i.to_string(), query);
+            if let Some(s) = score {
+                return Some(RankedItem(i.clone(), s));
+            }
+            None
+        })
+        .collect::<Vec<_>>()
+}
+
+fn rank_items<T>(scored: &[RankedItem<T>], max: usize) -> BinaryHeap<RankedItem<T>>
+where
+    T: Item,
+{
+    let mut heap = BinaryHeap::with_capacity(max);
+
+    for item in scored.iter() {
+        heap.push(item.clone());
+    }
+
+    heap
+}
+
+fn handle_events<W, T>(prompt: &mut Prompt, write: &mut W, list: &[T]) -> Result<Option<T>>
 where
     W: Write,
-    T: Display + Clone + Send + Sync + std::fmt::Debug,
+    T: Item,
 {
     let matcher = SkimMatcherV2::default();
+    let mut ranked: BinaryHeap<RankedItem<T>> = BinaryHeap::new();
 
     let to_print = list
-        .items
         .iter()
         .take(prompt.height as usize)
         .cloned()
         .collect::<Vec<_>>();
     render(prompt, write, &to_print)?;
 
-    let mut ranked: Vec<(i64, &T)> = Vec::with_capacity(20);
-
     loop {
-        // Wait up to 1s for another event
         if poll(Duration::from_millis(1_000))? {
-            // It's guaranteed that read() wont block if `poll` returns `Ok(true)`
             let event = read()?;
             let mut changed = false;
 
             match event {
                 Event::Key(KeyEvent { code, .. }) => match code {
                     KeyCode::Enter => {
-                        let ret = list.items.get(prompt.selection).unwrap();
-                        return Ok(Some(ret.clone()));
+                        let top: Vec<T> = if prompt.text.is_empty() {
+                            list.iter().take(prompt.selection + 1).cloned().collect()
+                        } else {
+                            ranked
+                                .into_iter()
+                                .take(prompt.selection + 1)
+                                .map(|r| r.0)
+                                .collect()
+                        };
+
+                        let selected = top.last();
+                        return Ok(selected.cloned());
                     }
                     KeyCode::Esc => {
                         break;
@@ -137,60 +210,27 @@ where
             }
 
             if changed {
-                ranked.clear();
-
-                let scores = list
-                    .items
-                    .par_iter()
-                    .map(|i| {
-                        let score = if prompt.text.is_empty() {
-                            None
-                        } else {
-                            matcher.fuzzy_match(&i.to_string(), &prompt.text)
-                        };
-                        (score, i)
-                    })
-                    .collect::<Vec<_>>();
-
-                for (score, item) in scores {
-                    if let Some(s) = score {
-                        ranked.push((s, &item));
-                        ranked.sort_by(|a, b| {
-                            let sc = b.0.cmp(&a.0);
-                            if sc == Ordering::Equal {
-                                return b.1.to_string().len().cmp(&a.1.to_string().len()).reverse();
-                            }
-                            sc
-                        });
-                        if ranked.len() >= prompt.height as usize {
-                            ranked.pop();
-                        }
-                    }
-                }
+                let scored = score_items(&matcher, list, &prompt.text);
+                ranked = rank_items(&scored, prompt.height as usize);
 
                 execute!(
                     write,
-                    MoveToNextLine(30),
-                    Print(format!("{}: {:?}", ranked.len(), ranked))
+                    MoveToNextLine(25),
+                    Clear(ClearType::UntilNewLine),
+                    Print(format!(
+                        "{}: {:?}",
+                        ranked.len(),
+                        ranked
+                            .iter()
+                            .take(prompt.height as usize)
+                            .collect::<Vec<_>>(),
+                    ))
                 )?;
-
-                // list.items.par_sort_unstable_by(|a, b| {
-                //     let sc = b.score.cmp(&a.score);
-                //     if sc == Ordering::Equal {
-                //         return b
-                //             .item
-                //             .to_string()
-                //             .len()
-                //             .cmp(&a.item.to_string().len())
-                //             .reverse();
-                //     }
-                //     sc
-                // });
             }
         }
-        let to_print = if ranked.is_empty() {
-            list.items
-                .iter()
+
+        let to_print = if prompt.text.is_empty() {
+            list.iter()
                 .take(prompt.height as usize)
                 .cloned()
                 .collect::<Vec<_>>()
@@ -198,8 +238,7 @@ where
             ranked
                 .iter()
                 .take(prompt.height as usize)
-                .map(|i| i.1)
-                .cloned()
+                .map(|i| i.0.clone())
                 .collect::<Vec<_>>()
         };
         render(prompt, write, &to_print)?;
@@ -210,7 +249,7 @@ where
 
 pub fn run<T>(items: &[T], height: u16) -> Result<Option<T>>
 where
-    T: Display + Clone + Send + Sync + std::fmt::Debug,
+    T: Item,
 {
     enable_raw_mode()?;
 
@@ -233,11 +272,7 @@ where
         height: height as u16,
         ..Prompt::default()
     };
-    let mut list = List {
-        items: items.iter().map(|v| v).collect(),
-    };
-
-    let result = handle_events(&mut prompt, &mut stdout(), &mut list)?;
+    let result = handle_events(&mut prompt, &mut stdout(), items)?;
 
     // clean up
 
@@ -245,10 +280,11 @@ where
         stdout(),
         SetSize(size_cols, size_rows),
         DisableMouseCapture,
-        RestorePosition
+        RestorePosition,
+        Clear(ClearType::UntilNewLine)
     )?;
 
     disable_raw_mode()?;
 
-    Ok(result.cloned())
+    Ok(result)
 }

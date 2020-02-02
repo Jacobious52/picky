@@ -12,15 +12,18 @@ where
 }
 
 fn main() {
-    if let Ok(lines) = read_lines("/usr/share/dict/words") {
-        let mut words = Vec::new();
+    let lines = match read_lines("/usr/share/dict/words") {
+        Ok(it) => it,
+        _ => return,
+    };
+    let mut words = Vec::new();
 
-        for line in lines {
-            if let Ok(ip) = line {
-                words.push(ip);
-            }
+    for line in lines {
+        if let Ok(ip) = line {
+            words.push(ip);
         }
-        let result = picky::run(&words, 20).unwrap();
-        println!("{:?}", result);
     }
+    let result = picky::run(&words, 20).unwrap();
+    //let result = picky::run(&["hello", "cats", "are", "longerworld"], 20).unwrap();
+    println!("{:?}", result);
 }
