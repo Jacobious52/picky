@@ -1,5 +1,26 @@
 use picky;
+use std::fs::File;
+use std::io::{self, BufRead};
+use std::path::Path;
+
+fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
+where
+    P: AsRef<Path>,
+{
+    let file = File::open(filename)?;
+    Ok(io::BufReader::new(file).lines())
+}
 
 fn main() {
-    picky::run(&vec!["cats", "dogs", "bears"].to_vec(), 3).unwrap();
+    if let Ok(lines) = read_lines("/usr/share/dict/words") {
+        let mut words = Vec::new();
+
+        for line in lines {
+            if let Ok(ip) = line {
+                words.push(ip);
+            }
+        }
+        let result = picky::run(&words, 20).unwrap();
+        println!("{:?}", result);
+    }
 }
