@@ -2,7 +2,8 @@ use std::{
     collections::BinaryHeap,
     fmt::{Debug, Display},
     io::{stdout, Write},
-    time::Duration,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use crossterm::{cursor::*, event::*, execute, queue, style::*, terminal::*, Result};
@@ -12,8 +13,8 @@ use std::cmp::Ordering;
 
 use rayon::prelude::*;
 
-pub trait Item: Display + Debug + Clone + Send + Sync + PartialEq {}
-impl<T: Display + Debug + Clone + Send + Sync + PartialEq> Item for T {}
+pub trait Item: Display + Debug + Clone + Send + Sync {}
+impl<T: Display + Debug + Clone + Send + Sync> Item for T {}
 
 #[derive(Clone, Debug)]
 struct Prompt {
@@ -34,7 +35,7 @@ impl Default for Prompt {
     }
 }
 
-fn render<W, T>(prompt: &mut Prompt, write: &mut W, items: &[T]) -> Result<()>
+fn render<W, T>(prompt: &mut Prompt, write: &mut W, items: &[RankedItem<T>]) -> Result<()>
 where
     W: Write,
     T: Item,
@@ -54,7 +55,7 @@ where
         if y < items.len() {
             let to_print = &items.get(y).unwrap();
 
-            let mut text = style(format!("{}: {}", y + 1, to_print));
+            let mut text = style(format!("{}: {}", y + 1, to_print.0));
             if y == prompt.selection {
                 text = text.yellow().on_blue()
             }
@@ -71,7 +72,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct RankedItem<T>(T, i64)
+struct RankedItem<T>(Arc<T>, Option<i64>)
 where
     T: Item;
 
@@ -113,42 +114,38 @@ where
     }
 }
 
-fn score_items<T>(matcher: &SkimMatcherV2, items: &[T], query: &str) -> Vec<RankedItem<T>>
+fn score_items<T>(matcher: &SkimMatcherV2, items: &mut [RankedItem<T>], query: &str)
 where
     T: Item,
 {
-    items
-        .par_iter()
-        .filter_map(|i| {
-            let score = matcher.fuzzy_match(&i.to_string(), query);
-            if let Some(s) = score {
-                return Some(RankedItem(i.clone(), s));
-            }
-            None
-        })
-        .collect::<Vec<_>>()
+    items.par_iter_mut().for_each(|i| {
+        let score = matcher.fuzzy_match(&i.0.to_string(), query);
+
+        i.1 = score
+    });
 }
 
-fn rank_items<T>(scored: &[RankedItem<T>], max: usize) -> BinaryHeap<RankedItem<T>>
+fn rank_items<T>(scored: &[RankedItem<T>], heap: &mut BinaryHeap<RankedItem<T>>)
 where
     T: Item,
 {
-    let mut heap = BinaryHeap::with_capacity(max);
-
-    for item in scored.iter() {
+    heap.clear();
+    for item in scored {
         heap.push(item.clone());
     }
-
-    heap
 }
 
-fn handle_events<W, T>(prompt: &mut Prompt, write: &mut W, list: &[T]) -> Result<Option<T>>
+fn handle_events<W, T>(
+    prompt: &mut Prompt,
+    write: &mut W,
+    list: &mut [RankedItem<T>],
+) -> Result<Option<T>>
 where
     W: Write,
     T: Item,
 {
     let matcher = SkimMatcherV2::default();
-    let mut ranked: BinaryHeap<RankedItem<T>> = BinaryHeap::new();
+    let mut ranked: BinaryHeap<RankedItem<T>> = BinaryHeap::with_capacity(list.len());
 
     let to_print = list
         .iter()
@@ -161,17 +158,21 @@ where
         if poll(Duration::from_millis(1_000))? {
             let event = read()?;
             let mut changed = false;
+            let now = Instant::now();
 
             match event {
                 Event::Key(KeyEvent { code, .. }) => match code {
                     KeyCode::Enter => {
                         let top: Vec<T> = if prompt.text.is_empty() {
-                            list.iter().take(prompt.selection + 1).cloned().collect()
+                            list.iter()
+                                .take(prompt.selection + 1)
+                                .map(|r| (*r.0).clone())
+                                .collect()
                         } else {
                             ranked
                                 .into_iter()
                                 .take(prompt.selection + 1)
-                                .map(|r| r.0)
+                                .map(|r| (*r.0).clone())
                                 .collect()
                         };
 
@@ -209,10 +210,12 @@ where
                 _ => {}
             }
 
-            if changed {
-                let scored = score_items(&matcher, list, &prompt.text);
-                ranked = rank_items(&scored, prompt.height as usize);
+            if changed && !prompt.text.is_empty() {
+                score_items(&matcher, list, &prompt.text);
+                rank_items(&list, &mut ranked);
             }
+
+            prompt.prompt = format!("{}ms> ", now.elapsed().as_millis());
         }
 
         let to_print = if prompt.text.is_empty() {
@@ -224,7 +227,7 @@ where
             ranked
                 .iter()
                 .take(prompt.height as usize)
-                .map(|i| i.0.clone())
+                .cloned()
                 .collect::<Vec<_>>()
         };
         render(prompt, write, &to_print)?;
@@ -258,7 +261,13 @@ where
         height: height as u16,
         ..Prompt::default()
     };
-    let result = handle_events(&mut prompt, &mut stdout(), items)?;
+
+    let mut list = items
+        .iter()
+        .map(|i| RankedItem(Arc::new(i), None))
+        .collect::<Vec<_>>();
+
+    let result = handle_events(&mut prompt, &mut stdout(), &mut list)?;
 
     // clean up
 
@@ -272,5 +281,5 @@ where
 
     disable_raw_mode()?;
 
-    Ok(result)
+    Ok(result.cloned())
 }
