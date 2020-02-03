@@ -1,5 +1,6 @@
 use std::{
     collections::BinaryHeap,
+    collections::HashMap,
     fmt::{Debug, Display},
     io::{stdout, Write},
     sync::Arc,
@@ -35,7 +36,7 @@ impl Default for Prompt {
     }
 }
 
-fn render<W, T>(prompt: &mut Prompt, write: &mut W, items: &[RankedItem<T>]) -> Result<()>
+fn render<W, T>(prompt: &Prompt, write: &mut W, items: &[RankedItem<T>]) -> Result<()>
 where
     W: Write,
     T: Item,
@@ -146,6 +147,12 @@ where
     let matcher = SkimMatcherV2::default();
     let mut ranked: BinaryHeap<RankedItem<T>> = BinaryHeap::with_capacity(list.len());
 
+    let mut cache: HashMap<String, Vec<RankedItem<T>>> = HashMap::new();
+    let mut background_cache: Vec<_> = "abcdefghijklmnopqrstuvwxyzABCDEFGIJKLMNOPQRSTUVWXYZ"
+        .chars()
+        .rev()
+        .collect();
+
     let to_print = list
         .iter()
         .take(prompt.height as usize)
@@ -154,7 +161,7 @@ where
     render(prompt, write, &to_print)?;
 
     loop {
-        if poll(Duration::from_millis(1_000))? {
+        if poll(Duration::from_millis(500))? {
             let event = read()?;
             let mut changed = false;
             let now = Instant::now();
@@ -209,15 +216,35 @@ where
                 _ => {}
             }
 
-            if changed && !prompt.text.is_empty() {
+            if changed && !prompt.text.is_empty() && !cache.contains_key(&prompt.text) {
                 score_items(&matcher, list, &prompt.text);
                 rank_items(&list, &mut ranked);
             }
 
             prompt.prompt = format!("{}ms> ", now.elapsed().as_millis());
+        } else {
+            // background cache
+            if let Some(next) = background_cache.pop() {
+                score_items(&matcher, list, &next.to_string());
+                rank_items(&list, &mut ranked);
+                cache.insert(
+                    next.to_string(),
+                    ranked
+                        .iter()
+                        .take(prompt.height as usize)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+            }
         }
 
-        let to_print = if prompt.text.is_empty() {
+        let query = prompt.text.clone();
+        if let Some(cached) = cache.get(&query) {
+            render(prompt, write, &cached)?;
+            continue;
+        }
+
+        let to_print = if query.is_empty() {
             list.iter()
                 .take(prompt.height as usize)
                 .cloned()
@@ -229,6 +256,8 @@ where
                 .cloned()
                 .collect::<Vec<_>>()
         };
+
+        cache.insert(query, to_print.to_vec());
         render(prompt, write, &to_print)?;
     }
 
