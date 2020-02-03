@@ -119,9 +119,7 @@ where
     T: Item,
 {
     items.par_iter_mut().for_each(|i| {
-        let score = matcher.fuzzy_match(&i.0.to_string(), query);
-
-        i.1 = score
+        i.1 = matcher.fuzzy_match(&i.0.to_string(), query);
     });
 }
 
@@ -130,9 +128,10 @@ where
     T: Item,
 {
     heap.clear();
-    for item in scored {
-        heap.push(item.clone());
-    }
+    scored
+        .iter()
+        .filter(|r| r.1.is_some())
+        .for_each(|r| heap.push(r.clone()));
 }
 
 fn handle_events<W, T>(
