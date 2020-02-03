@@ -24,6 +24,7 @@ fn main() {
         }
     }
     let result = picky::run(&words, 20).unwrap();
-    //let result = picky::run(&["hello", "cats", "are", "longerworld"], 20).unwrap();
-    println!("{:?}", result);
+    if let Some(result) = result {
+        println!("{}", result);
+    }
 }

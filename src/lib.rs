@@ -212,20 +212,6 @@ where
             if changed {
                 let scored = score_items(&matcher, list, &prompt.text);
                 ranked = rank_items(&scored, prompt.height as usize);
-
-                execute!(
-                    write,
-                    MoveToNextLine(25),
-                    Clear(ClearType::UntilNewLine),
-                    Print(format!(
-                        "{}: {:?}",
-                        ranked.len(),
-                        ranked
-                            .iter()
-                            .take(prompt.height as usize)
-                            .collect::<Vec<_>>(),
-                    ))
-                )?;
             }
         }
 
