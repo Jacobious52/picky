@@ -23,7 +23,7 @@ fn main() {
             words.push(ip);
         }
     }
-    let result = picky::run(&words, 20).unwrap();
+    let result = picky::run(&words, 20, None).unwrap();
     if let Some(result) = result {
         println!("{}", result);
     }

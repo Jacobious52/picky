@@ -21,7 +21,9 @@ impl<T: Display + Debug + Clone + Send + Sync> Item for T {}
 struct Prompt {
     prompt: String,
     text: String,
-    height: u16,
+    header: Option<String>,
+    height: usize,
+    width: usize,
     selection: usize,
 }
 
@@ -30,6 +32,8 @@ impl Default for Prompt {
         Prompt {
             prompt: "> ".to_string(),
             text: "".to_string(),
+            header: None,
+            width: 20,
             height: 5,
             selection: 0,
         }
@@ -50,18 +54,35 @@ where
         MoveRight(prompt.text.len() as u16)
     )?;
 
+    if let Some(header) = prompt.header.clone() {
+        queue!(
+            write,
+            MoveToNextLine(1),
+            Clear(ClearType::UntilNewLine),
+            MoveRight(3),
+            Print(style(header).dark_green()),
+        )?;
+    }
+
     for y in 0..prompt.height {
         queue!(write, MoveToNextLine(1), Clear(ClearType::UntilNewLine))?;
-        let y = y as usize;
         if y < items.len() {
             let to_print = &items.get(y).unwrap();
 
-            let mut text = style(format!("{}: {}", y + 1, to_print.0));
+            let item_string = to_print.0.clone().to_string();
+            let to_display = if item_string.len() > prompt.width {
+                &item_string[..prompt.width - 3]
+            } else {
+                &item_string[..]
+            };
+
+            let mut text = style(to_display);
             if y == prompt.selection {
                 text = text.yellow().on_blue()
             }
 
-            queue!(write, Print(text))?;
+            let number = style(format!("{}: ", y + 1)).dark_blue();
+            queue!(write, Print(number), Print(text))?;
         }
     }
 
@@ -153,18 +174,14 @@ where
         .rev()
         .collect();
 
-    let to_print = list
-        .iter()
-        .take(prompt.height as usize)
-        .cloned()
-        .collect::<Vec<_>>();
+    let to_print = list.iter().take(prompt.height).cloned().collect::<Vec<_>>();
     render(prompt, write, &to_print)?;
 
     loop {
         if poll(Duration::from_millis(500))? {
             let event = read()?;
             let mut changed = false;
-            let now = Instant::now();
+            let _now = Instant::now();
 
             match event {
                 Event::Key(KeyEvent { code, .. }) => match code {
@@ -192,11 +209,11 @@ where
                         if prompt.selection > 0 {
                             prompt.selection -= 1;
                         } else {
-                            prompt.selection = (prompt.height - 1) as usize;
+                            prompt.selection = prompt.height - 1;
                         }
                     }
                     KeyCode::Down => {
-                        if prompt.selection < (prompt.height - 1) as usize {
+                        if prompt.selection < prompt.height - 1 {
                             prompt.selection += 1;
                         } else {
                             prompt.selection = 0;
@@ -221,7 +238,7 @@ where
                 rank_items(&list, &mut ranked);
             }
 
-            prompt.prompt = format!("{}ms> ", now.elapsed().as_millis());
+        //prompt.prompt = format!("{}ms> ", now.elapsed().as_millis());
         } else {
             // background cache
             if let Some(next) = background_cache.pop() {
@@ -231,7 +248,7 @@ where
                     next.to_string(),
                     ranked
                         .iter()
-                        .take(prompt.height as usize)
+                        .take(prompt.height)
                         .cloned()
                         .collect::<Vec<_>>(),
                 );
@@ -245,14 +262,11 @@ where
         }
 
         let to_print = if query.is_empty() {
-            list.iter()
-                .take(prompt.height as usize)
-                .cloned()
-                .collect::<Vec<_>>()
+            list.iter().take(prompt.height).cloned().collect::<Vec<_>>()
         } else {
             ranked
                 .iter()
-                .take(prompt.height as usize)
+                .take(prompt.height)
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -264,29 +278,34 @@ where
     Ok(None)
 }
 
-pub fn run<T>(items: &[T], height: u16) -> Result<Option<T>>
+pub fn run<T>(items: &[T], height: u16, header: Option<&str>) -> Result<Option<T>>
 where
     T: Item,
 {
     enable_raw_mode()?;
 
+    let final_height = if header.is_none() { height } else { height + 1 };
+
     let (size_cols, size_rows) = size()?;
     let (_, pos_rows) = position()?;
 
-    if pos_rows + height > size_rows {
-        queue!(stdout(), ScrollUp(height), MoveUp(height))?;
+    if pos_rows + final_height > size_rows {
+        queue!(stdout(), ScrollUp(final_height), MoveUp(final_height))?;
     }
 
     // Resize terminal and scroll up.
     queue!(
         stdout(),
         EnableMouseCapture,
+        MoveToColumn(1),
         SavePosition,
-        SetSize(size_cols, height + 1)
+        SetSize(size_cols, final_height)
     )?;
 
     let mut prompt = Prompt {
-        height: height as u16,
+        height: height as usize,
+        width: size_cols as usize,
+        header: header.map(|s| s.into()),
         ..Prompt::default()
     };
 
@@ -298,6 +317,11 @@ where
     let result = handle_events(&mut prompt, &mut stdout(), &mut list)?;
 
     // clean up
+
+    queue!(stdout(), RestorePosition)?;
+    for _ in 0..final_height {
+        queue!(stdout(), MoveToNextLine(1), Clear(ClearType::UntilNewLine))?;
+    }
 
     execute!(
         stdout(),
