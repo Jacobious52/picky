@@ -14,8 +14,8 @@ use std::cmp::Ordering;
 
 use rayon::prelude::*;
 
-pub trait Item: Display + Debug + Clone + Send + Sync {}
-impl<T: Display + Debug + Clone + Send + Sync> Item for T {}
+pub trait Item: Display + Clone + Send + Sync {}
+impl<T: Display + Clone + Send + Sync> Item for T {}
 
 #[derive(Clone, Debug)]
 struct Prompt {
@@ -76,13 +76,28 @@ where
                 &item_string[..]
             };
 
-            let mut text = style(to_display);
-            if y == prompt.selection {
-                text = text.yellow().on_blue()
+            let chars = &to_print.2;
+            let mut styled = Vec::with_capacity(to_display.len());
+            for (i, c) in to_display.chars().enumerate() {
+                styled.push(if chars.contains(&i) && to_print.1.is_some() {
+                    style(c).magenta().underlined().bold().italic()
+                } else {
+                    style(c)
+                });
             }
 
-            let number = style(format!("{}: ", y + 1)).dark_blue();
-            queue!(write, Print(number), Print(text))?;
+            let num = style(format!("{}", y + 1)).blue();
+            let mut delim = style(": ").blue();
+            if y == prompt.selection {
+                delim = style("> ").red().bold();
+                styled = styled.into_iter().map(|s| s.yellow().on_blue()).collect();
+            }
+
+            queue!(write, Print(num), Print(delim))?;
+
+            for style in styled {
+                queue!(write, Print(style))?;
+            }
         }
     }
 
@@ -94,7 +109,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct RankedItem<T>(Arc<T>, Option<i64>)
+struct RankedItem<T>(Arc<T>, Option<i64>, Vec<usize>)
 where
     T: Item;
 
@@ -141,7 +156,13 @@ where
     T: Item,
 {
     items.par_iter_mut().for_each(|i| {
-        i.1 = matcher.fuzzy_match(&i.0.to_string(), query);
+        let result = matcher.fuzzy_indices(&i.0.to_string(), query);
+        if let Some((score, indices)) = result {
+            i.1 = Some(score);
+            i.2 = indices;
+        } else {
+            i.1 = None;
+        }
     });
 }
 
@@ -253,12 +274,15 @@ where
                         .collect::<Vec<_>>(),
                 );
             }
+            continue;
         }
 
         let query = prompt.text.clone();
-        if let Some(cached) = cache.get(&query) {
-            render(prompt, write, &cached)?;
-            continue;
+        if !query.is_empty() {
+            if let Some(cached) = cache.get(&query) {
+                render(prompt, write, &cached)?;
+                continue;
+            }
         }
 
         let to_print = if query.is_empty() {
@@ -311,7 +335,7 @@ where
 
     let mut list = items
         .iter()
-        .map(|i| RankedItem(Arc::new(i), None))
+        .map(|i| RankedItem(Arc::new(i), None, Vec::new()))
         .collect::<Vec<_>>();
 
     let result = handle_events(&mut prompt, &mut stdout(), &mut list)?;
