@@ -208,13 +208,13 @@ where
                 Event::Key(KeyEvent { code, .. }) => match code {
                     KeyCode::Enter => {
                         let top: Vec<T> = if prompt.text.is_empty() {
-                            list.iter()
+                            list.par_iter()
                                 .take(prompt.selection + 1)
                                 .map(|r| (*r.0).clone())
                                 .collect()
                         } else {
                             ranked
-                                .into_iter()
+                                .par_iter()
                                 .take(prompt.selection + 1)
                                 .map(|r| (*r.0).clone())
                                 .collect()
@@ -262,18 +262,18 @@ where
         //prompt.prompt = format!("{}ms> ", now.elapsed().as_millis());
         } else {
             // background cache
-            if let Some(next) = background_cache.pop() {
-                score_items(&matcher, list, &next.to_string());
-                rank_items(&list, &mut ranked);
-                cache.insert(
-                    next.to_string(),
-                    ranked
-                        .iter()
-                        .take(prompt.height)
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                );
-            }
+            // if let Some(next) = background_cache.pop() {
+            //     score_items(&matcher, list, &next.to_string());
+            //     rank_items(&list, &mut ranked);
+            //     cache.insert(
+            //         next.to_string(),
+            //         ranked
+            //             .iter()
+            //             .take(prompt.height)
+            //             .cloned()
+            //             .collect::<Vec<_>>(),
+            //     );
+            // }
             continue;
         }
 
@@ -286,10 +286,13 @@ where
         }
 
         let to_print = if query.is_empty() {
-            list.iter().take(prompt.height).cloned().collect::<Vec<_>>()
+            list.par_iter()
+                .take(prompt.height)
+                .cloned()
+                .collect::<Vec<_>>()
         } else {
             ranked
-                .iter()
+                .par_iter()
                 .take(prompt.height)
                 .cloned()
                 .collect::<Vec<_>>()
@@ -334,7 +337,7 @@ where
     };
 
     let mut list = items
-        .iter()
+        .par_iter()
         .map(|i| RankedItem(Arc::new(i), None, Vec::new()))
         .collect::<Vec<_>>();
 
