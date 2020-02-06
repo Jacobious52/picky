@@ -6,11 +6,29 @@ cross platform command line fuzzy selection library. like fzf and skim but with 
 
 heavy wip
 
-
-# examples
+## examples
 
 `cargo run --example words --release`
 
 - words
+
+![words](./examples/words.png)
+
 - ps
+
+![ps](./examples/ps.png)
+
 - simple
+
+![simple](./examples/simple.png)
+
+## todo
+
+- make turning off colors possible
+- choose nicer random colors
+- cleanup / refactor
+- fix selection going off bounds
+- builder pattern
+- test on Windows
+- handle spaces properly
+- improve query editing

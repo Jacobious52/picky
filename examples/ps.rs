@@ -12,7 +12,7 @@ fn main() {
 
     let lines: Vec<_> = str::from_utf8(&output.stdout).unwrap().lines().collect();
 
-    let result = picky::run(&lines[1..], 3, Some(&lines[0]), true).unwrap();
+    let result = picky::run(&lines[1..], 10, Some(&lines[0]), true).unwrap();
     if let Some(result) = result {
         println!("{}", result);
     }
