@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::BinaryHeap,
     collections::HashMap,
     fmt::{Debug, Display},
@@ -10,8 +11,7 @@ use std::{
 use crossterm::{cursor::*, event::*, execute, queue, style::*, terminal::*, Result};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use std::cmp::Ordering;
-
+use rand::Rng;
 use rayon::prelude::*;
 
 pub trait Item: Display + Clone + Send + Sync {}
@@ -25,6 +25,7 @@ struct Prompt {
     height: usize,
     width: usize,
     selection: usize,
+    color_map: HashMap<char, Color>,
 }
 
 impl Default for Prompt {
@@ -36,6 +37,7 @@ impl Default for Prompt {
             width: 20,
             height: 5,
             selection: 0,
+            color_map: HashMap::new(),
         }
     }
 }
@@ -45,22 +47,37 @@ where
     W: Write,
     T: Item,
 {
+    let styled_prompt: Vec<_> = prompt
+        .text
+        .chars()
+        .map(|c| style(c).with(*prompt.color_map.get(&c).unwrap_or(&Color::White)))
+        .collect();
+
     queue!(
         write,
         RestorePosition,
         Clear(ClearType::UntilNewLine),
-        Print(prompt.prompt.clone()),
-        Print(prompt.text.clone()),
-        MoveRight(prompt.text.len() as u16)
+        Print(style(prompt.prompt.clone()).cyan().slow_blink().bold()),
     )?;
 
+    for style in styled_prompt {
+        queue!(write, Print(style))?;
+    }
+
+    queue!(write, MoveRight(prompt.text.len() as u16))?;
+
     if let Some(header) = prompt.header.clone() {
+        let header_trimmed = if header.len() > prompt.width {
+            &header[..prompt.width - 3]
+        } else {
+            &header[..]
+        };
         queue!(
             write,
             MoveToNextLine(1),
             Clear(ClearType::UntilNewLine),
             MoveRight(3),
-            Print(style(header).dark_green()),
+            Print(style(header_trimmed).dark_green()),
         )?;
     }
 
@@ -76,22 +93,32 @@ where
                 &item_string[..]
             };
 
-            let chars = &to_print.2;
-            let mut styled = Vec::with_capacity(to_display.len());
-            for (i, c) in to_display.chars().enumerate() {
-                styled.push(if chars.contains(&i) && to_print.1.is_some() {
-                    style(c).magenta().underlined().bold().italic()
-                } else {
-                    style(c)
-                });
-            }
+            let matched_chars = &to_print.2;
+            let styled: Vec<_> = to_display
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    let mut s = style(c);
+                    if y == prompt.selection {
+                        s = s.on_dark_grey();
+                    }
+                    if matched_chars.contains(&i) && to_print.1.is_some() {
+                        s = s
+                            .with(*prompt.color_map.get(&c).unwrap_or(&Color::White))
+                            .underlined()
+                            .bold()
+                            .italic();
+                    }
+                    s
+                })
+                .collect();
 
             let num = style(format!("{}", y + 1)).blue();
-            let mut delim = style(": ").blue();
-            if y == prompt.selection {
-                delim = style("> ").red().bold();
-                styled = styled.into_iter().map(|s| s.on_dark_grey()).collect();
-            }
+            let delim = if y == prompt.selection {
+                style("> ").red().bold()
+            } else {
+                style(": ").blue()
+            };
 
             queue!(write, Print(num), Print(delim))?;
 
@@ -112,6 +139,21 @@ where
 struct RankedItem<T>(Arc<T>, Option<i64>, Vec<usize>)
 where
     T: Item;
+
+impl<T> RankedItem<T>
+where
+    T: Item,
+{
+    fn rank(&mut self, matcher: &SkimMatcherV2, query: &str) {
+        let result = matcher.fuzzy_indices(&self.0.to_string(), query);
+        if let Some((score, indices)) = result {
+            self.1 = Some(score);
+            self.2 = indices;
+        } else {
+            self.1 = None;
+        }
+    }
+}
 
 impl<T> Ord for RankedItem<T>
 where
@@ -155,14 +197,8 @@ fn score_items<T>(matcher: &SkimMatcherV2, items: &mut [RankedItem<T>], query: &
 where
     T: Item,
 {
-    items.par_iter_mut().for_each(|i| {
-        let result = matcher.fuzzy_indices(&i.0.to_string(), query);
-        if let Some((score, indices)) = result {
-            i.1 = Some(score);
-            i.2 = indices;
-        } else {
-            i.1 = None;
-        }
+    items.par_iter_mut().for_each(|item| {
+        item.rank(matcher, query);
     });
 }
 
@@ -307,13 +343,19 @@ where
     Ok(None)
 }
 
-pub fn run<T>(items: &[T], height: u16, header: Option<&str>) -> Result<Option<T>>
+// TODO: turn into builder with options
+pub fn run<T>(items: &[T], height: u16, header: Option<&str>, resize: bool) -> Result<Option<T>>
 where
     T: Item,
 {
     enable_raw_mode()?;
+    let mut rng = rand::thread_rng();
 
-    let final_height = if header.is_none() { height } else { height + 1 };
+    let final_height = if header.is_none() {
+        height + 1
+    } else {
+        height + 2
+    };
 
     let (size_cols, size_rows) = size()?;
     let (_, pos_rows) = position()?;
@@ -323,18 +365,20 @@ where
     }
 
     // Resize terminal and scroll up.
-    queue!(
-        stdout(),
-        EnableMouseCapture,
-        MoveToColumn(1),
-        SavePosition,
-        SetSize(size_cols, final_height)
-    )?;
+    queue!(stdout(), EnableMouseCapture, MoveToColumn(1), SavePosition)?;
+
+    if resize {
+        queue!(stdout(), SetSize(size_cols, final_height))?;
+    }
 
     let mut prompt = Prompt {
         height: height as usize,
         width: size_cols as usize,
         header: header.map(|s| s.into()),
+        color_map: "abcdefghijklmnopqrstuvwxyzABCDEFGIJKLMNOPQRSTUVWXYZ"
+            .chars()
+            .map(|c| (c, Color::AnsiValue(rng.gen())))
+            .collect(),
         ..Prompt::default()
     };
 
