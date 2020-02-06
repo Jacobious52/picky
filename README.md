@@ -5,3 +5,12 @@
 cross platform command line fuzzy selection library. like fzf and skim but with less features.
 
 heavy wip
+
+
+# examples
+
+`cargo run --example words --release`
+
+- words
+- ps
+- simple
