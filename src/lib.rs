@@ -90,7 +90,7 @@ where
             let mut delim = style(": ").blue();
             if y == prompt.selection {
                 delim = style("> ").red().bold();
-                styled = styled.into_iter().map(|s| s.yellow().on_blue()).collect();
+                styled = styled.into_iter().map(|s| s.on_dark_grey()).collect();
             }
 
             queue!(write, Print(num), Print(delim))?;
@@ -262,18 +262,20 @@ where
         //prompt.prompt = format!("{}ms> ", now.elapsed().as_millis());
         } else {
             // background cache
-            // if let Some(next) = background_cache.pop() {
-            //     score_items(&matcher, list, &next.to_string());
-            //     rank_items(&list, &mut ranked);
-            //     cache.insert(
-            //         next.to_string(),
-            //         ranked
-            //             .iter()
-            //             .take(prompt.height)
-            //             .cloned()
-            //             .collect::<Vec<_>>(),
-            //     );
-            // }
+            if let Some(next) = background_cache.pop() {
+                let mut list_clone = list.to_vec();
+                let mut ranked_clone = BinaryHeap::with_capacity(list_clone.len());
+                score_items(&matcher, &mut list_clone, &next.to_string());
+                rank_items(&list_clone, &mut ranked_clone);
+                cache.insert(
+                    next.to_string(),
+                    ranked_clone
+                        .iter()
+                        .take(prompt.height)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+            }
             continue;
         }
 
