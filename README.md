@@ -4,7 +4,7 @@
 
 cross platform command line fuzzy selection library. like fzf and skim but with less features.
 
-heavy wip
+heavy wip, mostly for self learning and Windows support.
 
 ## examples
 
